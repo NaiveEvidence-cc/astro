@@ -163,3 +163,22 @@ When writing unit tests, read [`reference/unit-testing.md`](./reference/unit-tes
 ## Vite Dep Optimizer (`optimizeDeps`)
 
 When a bug works in `astro build` but fails in `astro dev` with errors like `require is not defined`, the root cause is almost always Vite's dep optimizer failing to pre-bundle a CJS dependency. `astro build` uses Rollup and handles CJS→ESM reliably; `astro dev` relies on esbuild's optimizer scan, which is intentionally shallow and will miss deps that are only reachable through non-JS files (like `.astro` components in `node_modules`). The key files are `packages/astro/src/vite-plugin-environment/index.ts` (sets `optimizeDeps.entries`) and `packages/astro/src/core/create-vite.ts` (wires up `vitefu`/`crawlFrameworkPkgs`). For a full deep-dive including a debugging playbook and potential fixes, see [`reference/optimize-deps.md`](./reference/optimize-deps.md).
+
+# Base44 Sandbox
+
+`docker-compose.base44.yml` runs this repo in the Base44 sandbox so the preview can serve a live Astro dev server on port 3000. It is not needed for normal development.
+
+Two services, both on the plain Node image built by `.base44/Dockerfile`, with the working tree bind-mounted:
+
+- `setup` (one-shot): `pnpm install --frozen-lockfile`, then `pnpm exec turbo run build --filter=astro`.
+- `web`: `pnpm -C examples/basics exec astro dev --host 0.0.0.0 --port 3000`, started only after `setup` exits successfully.
+
+The framework build has to come first: `examples/*` resolve `astro` to the workspace package, whose `exports` point at `packages/astro/dist`, so no example can start until that package is built.
+
+- Refresh: `docker compose -f docker-compose.base44.yml up -d --build` (about 35s with a warm pnpm store; the first run installs the whole workspace).
+- The dev server reads example source directly, so edits under `examples/basics` reload live. Edits to `packages/*/src` do not reach the running server: rebuild and restart with `docker compose -f docker-compose.base44.yml run --rm setup && docker compose -f docker-compose.base44.yml restart web`.
+- To preview a different example, change the `pnpm -C <dir>` in the `web` command and build that example's workspace dependencies first, e.g. `pnpm exec turbo run build --filter=@example/blog` in `setup`.
+
+Sandbox-only settings live in the compose file and image, not in shared config: `--allowed-hosts ".$BASE44_SANDBOX_HOST_DOMAIN"` (the preview proxy sends the sandbox hostname as `Host`), the pnpm store inside the workspace as `.pnpm-store` plus `verify-deps-before-run=false` in the image (the registry is slow here, and `setup` has already installed), and `ASTRO_DISABLE_UPDATE_CHECK=true`.
+
+Check it with `curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/` (expects `200`) or `docker compose -f docker-compose.base44.yml ps` (`web` reports `healthy`). The app needs no database, no external service, and no credentials.
